@@ -515,6 +515,13 @@ def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dic
     return query_gateway_control(home, "rescan-profiles", timeout=timeout)
 
 
+def apply_gateway_channel_config(home: Path, platform: str, *,
+                                 timeout: float = 90.0) -> Optional[dict[str, Any]]:
+    """Apply one saved channel configuration in the running gateway."""
+    return query_gateway_control(home, "apply-channel-config",
+                                 params={"platform": platform}, timeout=timeout)
+
+
 def request_unserve_profile(home: Path, name: str) -> Optional[dict[str, Any]]:
     return query_gateway_control(home, "unserve-profile", params={"name": name}, timeout=8.0)
 

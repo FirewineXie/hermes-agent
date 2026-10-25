@@ -19,6 +19,7 @@ from hermes_cli.web_server_profiles import (
     _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
 )
 from hermes_cli.web_models import RawConfigUpdate
+from hermes_cli.web_config_effect import config_save_effect
 
 router = APIRouter()
 
@@ -60,12 +61,16 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
             # Full-document replacement: the editor owns the whole file; never
             # merge omitted sections back from disk.
             # See #62723.
-            approvals_mode_changed = _approval_mode_of(parsed) != _approval_mode_of(read_raw_config())
+            previous = read_raw_config()
+            approvals_mode_changed = _approval_mode_of(parsed) != _approval_mode_of(previous)
             save_config(parsed, merge_existing=False)
+            persisted = read_raw_config()
+            effect = ({"status": "unknown"} if getattr(persisted, "read_error", None) is not None
+                      else config_save_effect(previous, persisted))
         # Same indicator refresh as the schema-driven save.
         if approvals_mode_changed and not _is_other_profile(body.profile or profile):
             _broadcast_gateway_session_info()
-        return {"ok": True}
+        return {"ok": True, "effect": effect}
 
     try:
         return await asyncio.to_thread(_run)

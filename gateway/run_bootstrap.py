@@ -351,9 +351,16 @@ async def _start_gateway_start_control_socket(runner):
                 result = {"pending": True, "served_profiles": runner.served_profile_names()}
             return {"multiplex": bool(getattr(runner.config, "multiplex_profiles", False)), **result}
 
+        def _apply_channel_handler(params: Optional[dict] = None) -> dict:
+            platform = str((params or {}).get("platform") or "")
+            future = asyncio.run_coroutine_threadsafe(
+                runner.apply_primary_channel_config(platform), _main_loop)
+            return future.result(timeout=85.0)
+
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
                            "rescan-profiles": _rescan_profiles_handler,
+                           "apply-channel-config": _apply_channel_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
                            "unserve-profile": unserve_profile_verb(runner),
                            "serve-profile": serve_profile_verb(runner),

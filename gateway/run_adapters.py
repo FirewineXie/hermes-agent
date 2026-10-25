@@ -256,7 +256,7 @@ class GatewayAdapterLifecycleMixin:
 
         Idempotent if already queued. See #80598.
         """
-        if not adapter.fatal_error_retryable:
+        if getattr(adapter, "_config_replaced", False) or not adapter.fatal_error_retryable:
             return False
         platform_config = self.config.platforms.get(adapter.platform)
         if not platform_config:
@@ -331,6 +331,7 @@ class GatewayAdapterLifecycleMixin:
             shutdown_event = getattr(self, "_shutdown_event", None)
             if (
                 adapter.fatal_error_retryable
+                and not getattr(adapter, "_config_replaced", False)
                 and platform not in self.adapters
                 and platform not in getattr(self, "_failed_platforms", {})
                 and not (shutdown_event is not None and shutdown_event.is_set())
@@ -364,6 +365,8 @@ class GatewayAdapterLifecycleMixin:
 
     async def _handle_adapter_fatal_error_impl(self, adapter: BasePlatformAdapter) -> None:
         # Snapshot the slot owner first: a stale notification must not touch a healthy platform.
+        if getattr(adapter, "_config_replaced", False):
+            return
         existing = self.adapters.get(adapter.platform)
         if existing is not None and existing is not adapter:
             logger.debug(
@@ -794,6 +797,7 @@ class GatewayAdapterLifecycleMixin:
     async def _reconnect_failed_platform(self, platform, now: float) -> None:
         """One watcher pass for a queued platform: gate, attempt, and record the outcome."""
         from gateway.run import _dispose_unused_adapter, _platform_has_bot_credential
+        generation = getattr(self, "_channel_apply_generations", {}).get(platform, 0)
         info = self._failed_platforms.get(platform)
         # None: removed concurrently since the caller's snapshot. Paused needs /platform resume.
         if info is None or info.get("paused"):
@@ -842,6 +846,9 @@ class GatewayAdapterLifecycleMixin:
             self._wire_adapter_handlers(adapter)
             # is_reconnect keeps the server-side update queue so offline-period messages are delivered.
             success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
+            if generation != getattr(self, "_channel_apply_generations", {}).get(platform, 0):
+                await self._safe_adapter_disconnect(adapter, platform)
+                return
             if success:
                 await self._install_reconnected_adapter(platform, adapter)
             elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
@@ -905,11 +912,13 @@ class GatewayAdapterLifecycleMixin:
             ))
             task.add_done_callback(self._late_failure_callback("planned-restart notification replay failed"))
 
-    async def _install_reconnected_adapter(self, platform, adapter) -> None:
+    async def _install_reconnected_adapter(self, platform, adapter, *, predecessor=_UNSET) -> None:
         """Publish a freshly reconnected primary adapter and replay what it missed while down."""
         self._publish_primary_adapter(platform, adapter)
         self.delivery_router.adapters = self.adapters
-        hand_over_held_inbound(self._failed_platforms.pop(platform).get("predecessor"), adapter)
+        if predecessor is _UNSET:
+            predecessor = self._failed_platforms.pop(platform).get("predecessor")
+        hand_over_held_inbound(predecessor, adapter)
         # connect() returning True does not mean the receive path is confirmed -- Telegram's degraded
         # reconnect returns True so the gateway stays up while its own ladder retries. Stamping "connected"
         # here would undo the adapter's accurate status.

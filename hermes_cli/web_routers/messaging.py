@@ -1037,7 +1037,19 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
         # A live multiplexer serving this named profile builds the adapter from the new token now
         # (its periodic rescan would otherwise pick it up within a cycle); no gateway restart.
         hot_served = await asyncio.to_thread(_notify_multiplexer_hot_serve, target_profile)
-        return {"ok": True, "platform": platform_id, "hot_served": hot_served}
+        if hot_served:
+            effect = {"status": "component_restarted", "component": platform_id}
+        elif not target_profile or target_profile == "default":
+            from gateway.control_socket import apply_gateway_channel_config
+            from hermes_constants import get_hermes_home
+
+            effect = await asyncio.to_thread(
+                apply_gateway_channel_config, get_hermes_home(), platform_id)
+            if effect is None:
+                effect = {"status": "gateway_restart_required", "reason": "gateway_unavailable"}
+        else:
+            effect = {"status": "gateway_restart_required", "reason": "profile_not_served"}
+        return {"ok": True, "platform": platform_id, "hot_served": hot_served, "effect": effect}
 
 
 def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:
@@ -1049,7 +1061,8 @@ def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:
     name = (profile or "").strip() or _current_profile_name()
     if not name or name == "default" or not named_profile_served_by_running_multiplexer(name):
         return False
-    return notify_multiplexer_profiles_changed(name) is not None
+    served = notify_multiplexer_profiles_changed(name)
+    return served is not None and name in served
 
 
 def _gate_env(name: str) -> str:

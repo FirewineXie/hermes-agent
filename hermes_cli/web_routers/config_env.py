@@ -27,6 +27,7 @@ from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
 from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
+from hermes_cli.web_config_effect import config_save_effect
 from typing import Any, Dict, List, Optional, Tuple
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -120,6 +121,7 @@ async def update_config(
 ):
     def _run():
         approvals_mode_changed = False
+        effect = {"status": "applied"}
         with _profile_scope(body.profile or profile):
             # The dashboard form is schema-driven; root keys absent from the
             # schema (``custom_providers``, ``agent.personalities``, ...) are not
@@ -144,13 +146,18 @@ async def update_config(
                 save_config(
                     merged, preserve_keys={("display", "language")} if preserve_language else None
                 )
+                # A post-save read is advisory only: the write already committed, so a
+                # transient read failure must not turn a successful save into HTTP 500.
+                persisted = read_raw_config()
+                effect = ({"status": "unknown"} if getattr(persisted, "read_error", None) is not None
+                          else config_save_effect(existing, persisted))
         # REST saves bypass the config.set RPC (which re-emits itself), so
         # refresh live sessions' cached approval/YOLO indicators after a mode
         # change. Own-profile saves only: a profile-scoped save targets a
         # different HERMES_HOME than this process's gateway sessions.
         if approvals_mode_changed and not _is_other_profile(body.profile or profile):
             _broadcast_gateway_session_info()
-        return {"ok": True}
+        return {"ok": True, "effect": effect}
 
     with http_failure("PUT /api/config failed", 500, detail="Internal server error"):
         return await asyncio.to_thread(_run)

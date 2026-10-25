@@ -28,6 +28,14 @@ default-profile server) gives the same status as an unscoped request. **Saved** 
 credentials are stored, not that the messaging gateway is running or the platform is
 connected. An enabled platform can correctly show **Messaging gateway stopped**.
 
+Saving Feishu/Lark or Weixin credentials through the dashboard messaging API asks the
+running primary gateway to rebuild that platform adapter. Other connected platforms
+and active sessions remain in the same gateway process. The response's `effect.status`
+reports `component_restarted` only after the new adapter connects; `failed` means the
+new connection failed and Hermes attempted to restore the previous adapter.
+`gateway_restart_required` means the running gateway could not apply the change.
+Editing `config.yaml` directly does not invoke this channel reload path.
+
 ## Platform Comparison
 
 | Platform | Voice | Images | Files | Threads | Reactions | Typing | Streaming |
