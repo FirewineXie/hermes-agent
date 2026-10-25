@@ -1,0 +1,55 @@
+name: Hermess desktop source
+
+on:
+  pull_request:
+    branches: [hermess-desktop]
+  push:
+    branches: [hermess-desktop]
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Hermess desktop gate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - name: Verify desktop branch lineage
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin hermess-desktop
+          base=$(git merge-base HEAD origin/hermess-desktop)
+          git cat-file -e "$base:hermes_cli/hermess_private_api.py"
+      - name: Check private API integration
+        run: |
+          python -m py_compile hermes_cli/hermess_private_api.py hermes_cli/web_server.py hermes_cli/web_server_boundary.py hermes_cli/web_server_dashboard.py
+          python - <<'PY'
+          import os
+          from hermes_cli.hermess_private_api import (
+              reject_browser_origin, require_loopback_host, withhold_token,
+          )
+
+          os.environ.pop('HERMESS_DESKTOP_PRIVATE_API', None)
+          require_loopback_host('0.0.0.0')
+          assert not withhold_token(False)
+          assert not reject_browser_origin('https://example.com')
+
+          os.environ['HERMESS_DESKTOP_PRIVATE_API'] = '1'
+          require_loopback_host('127.0.0.1')
+          try:
+              require_loopback_host('0.0.0.0')
+          except SystemExit:
+              pass
+          else:
+              raise AssertionError('private API accepted a non-loopback listener')
+          assert withhold_token(False)
+          assert reject_browser_origin('https://example.com')
+          assert not reject_browser_origin('')
+          PY

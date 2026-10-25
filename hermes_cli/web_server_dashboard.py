@@ -132,7 +132,8 @@ def mount_spa(application: FastAPI):
             # gate is off: on a gated serve the token must never be readable without auth.
             # See #94227, #95575.
             gated = bool(getattr(application.state, "auth_required", False))
-            withheld = gated or bool(getattr(app.state, "withhold_session_token", False))
+            from hermes_cli.hermess_private_api import withhold_token
+            withheld = withhold_token(gated or bool(getattr(app.state, "withhold_session_token", False)))
             if full_path == "" and not withheld:
                 return HTMLResponse(
                     "<!doctype html><html><head><script>"
@@ -168,7 +169,8 @@ def mount_spa(application: FastAPI):
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         # The gateway-hosted listener (gateway/run_api.py) never publishes it: local clients use tickets.
-        withheld = gated or bool(getattr(app.state, "withhold_session_token", False))
+        from hermes_cli.hermess_private_api import withhold_token
+        withheld = withhold_token(gated or bool(getattr(app.state, "withhold_session_token", False)))
         token_js = "" if withheld else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
         # Launcher-preselected profile (``--open-profile``): the SPA's fallback scope when the URL
         # omits ``?profile=`` (#73085). ``</`` escaped so a hostile name cannot close the script tag.

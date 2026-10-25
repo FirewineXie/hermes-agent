@@ -205,6 +205,9 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
     if not _is_accepted_host(host_header, bound_host, trusted_public_hosts):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
     origin = ws.headers.get("origin", "")
+    from hermes_cli.hermess_private_api import reject_browser_origin
+    if reject_browser_origin(origin):
+        return "desktop_browser_origin"
     if not origin:
         return None
     try:
