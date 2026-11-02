@@ -72,6 +72,10 @@ CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui", "catalog"})
 
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
+    "hermess-research": _ts("Hermess private single-profile research tasks", [
+        "web_search", "web_extract", "kanban_show", "kanban_complete", "kanban_block",
+        "kanban_heartbeat", "kanban_comment", "kanban_attach", "kanban_attachments",
+    ]),
     # Basic toolsets - individual tool categories
     "web": _ts("Web research and content extraction tools", ["web_search", "web_extract"]),
     "search": _ts("Web search only (no content extraction/scraping)", ["web_search"]),

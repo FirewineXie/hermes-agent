@@ -95,6 +95,8 @@ class GatewayDashboardMount:
                 raise RuntimeError("gateway API stopped")
             if getattr(web.app.state, "gateway_runner", None) not in (None, self.runner):
                 raise RuntimeError("gateway API already started")
+            from hermes_cli.hermess_tasks import install_private_routes
+            install_private_routes(web.app)
             self._bind_state(web)
             lifespan = web.app.router.lifespan_context(web.app)
             try:
