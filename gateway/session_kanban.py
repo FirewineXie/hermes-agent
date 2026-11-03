@@ -50,11 +50,6 @@ def build_kanban_policy(connection, params, config):
         raise RuntimeStoreError('invalid_kanban_claim') from exc
     cwd = task.workspace_path
     params_policy = {'source': 'cli', 'cwd': cwd}
-    from hermes_cli.hermess_tasks import research_task
-    from hermes_cli.hermess_private_api import enabled as hermess_private
-    personal_research = hermess_private() and research_task(task, board)
-    if personal_research:
-        params_policy['toolsets'] = ['hermess-research']
     for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
         if value:
             params_policy[name] = value
@@ -71,8 +66,7 @@ def build_kanban_policy(connection, params, config):
     context['db'] = str(path)
     request = json.loads(policy.request_json)
     request.update(source='kanban', board=board, task_id=task.id, run_id=task.current_run_id)
-    task_toolsets = ('hermess-research',) if personal_research else tuple(sorted(set(policy.toolsets) | {'kanban'}))
-    return replace(policy, source='kanban', platform='cli', toolsets=task_toolsets,
+    return replace(policy, source='kanban', platform='cli', toolsets=tuple(sorted(set(policy.toolsets) | {'kanban'})),
                    request_json=json.dumps(request, sort_keys=True), kanban_json=json.dumps(context)), private
 
 
