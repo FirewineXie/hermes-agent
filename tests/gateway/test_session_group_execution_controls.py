@@ -32,6 +32,9 @@ class RoomService:
     def revoke_room_routes(self, room_id):
         self.calls.append(('revoke', room_id))
 
+    def register_peer_route(self, **route):
+        self.calls.append(('register_peer', route))
+
     def send(self, *, room_id, event_id, payload):
         from gateway.hosted_rooms import append_event, room_state
         self.calls.append(('send', room_id, event_id, payload))
@@ -111,6 +114,122 @@ def test_execution_controls_preserve_native_wire_and_exact_task_identity(tmp_pat
             disbanded = await call('groups.disband', room_id='owned', cancel_id='disband-exact')
             assert 'result' in disbanded, disbanded
             assert service.calls[-2:] == [('stop', 'owned', 'disband-exact', True), ('revoke', 'owned')]
+        asyncio.run(probe())
+
+
+def test_canonical_peer_register_requires_owner_and_verified_route(tmp_path, monkeypatch):
+    from gateway.hosted_room_peer import catalog_mapping
+    from gateway.hosted_rooms import local_authority_gateway_id
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    catalog = catalog_mapping(target_profile='default', installation_id='install-peer',
+                              persistent_process=True)
+    member = 'peer-default'
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={})
+        owner = AuthorityConnection(authority, object(), {'user_id': 'alice'})
+        service = authority.hosted_room_service = RoomService(db.db_path, owner.actor.subject)
+
+        async def call(connection, method, **params):
+            return await connection.dispatch({'id': 1, 'method': method, 'params': params})
+
+        async def probe():
+            created = await call(owner, 'groups.create', room_id='owned', name='Room', members=[
+                {'member_id': 'local', 'profile': 'default', 'handle': 'local'},
+                {'member_id': member, 'profile': 'default', 'handle': member,
+                 'target': {'kind': 'peer', 'peer_id': member,
+                            'installation_id': catalog['installation_id'], 'profile': 'default',
+                            'capability_digest': catalog['catalog_digest']}}])
+            assert 'result' in created, created
+            room = created['result']['room']
+
+            class PeerClient:
+                def __init__(self, *, base_url, api_key, **_kwargs):
+                    assert base_url == 'https://peer.example.test'
+                    assert api_key == ''
+
+                def probe(self, *, grant):
+                    if grant == 'forged-grant':
+                        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+                        raise PeerRunsHTTPError('authorization needs renewal', status_code=403,
+                                                error_code='invalid_room_grant')
+                    assert grant == 'scoped-grant'
+                    return {'room_id': 'owned', 'home_install_id': local_authority_gateway_id(),
+                            'authority_gateway_id': room['authority_gateway_id'],
+                            'authority_epoch': room['authority_epoch'], 'member_id': member,
+                            'target_profile': 'default', 'catalog': catalog}
+
+            monkeypatch.setattr('tui_gateway.hosted_room_peer_http.PeerRunsHTTPClient', PeerClient)
+            params = {'room_id': 'owned', 'member_id': member, 'target_url': 'https://peer.example.test',
+                      'catalog': catalog, 'target_profile': 'default', 'grant': 'scoped-grant'}
+            stranger = AuthorityConnection(authority, object(), {'user_id': 'bob'})
+            denied = await call(stranger, 'groups.peer.register', **params)
+            assert denied['error']['message'] == 'permission_denied', denied
+            reader = AuthorityConnection(authority, object(),
+                                         {'user_id': 'alice', 'capabilities': ['session:read']})
+            denied = await call(reader, 'groups.peer.register', **params)
+            assert denied['error']['message'] == 'permission_denied', denied
+            assert not any(entry[0] == 'register_peer' for entry in service.calls)
+            wrong_member = await call(owner, 'groups.peer.register', **(params | {'member_id': 'other'}))
+            assert wrong_member['error']['message'] == 'invalid_params', wrong_member
+            forged = await call(owner, 'groups.peer.register', **(params | {'grant': 'forged-grant'}))
+            assert forged['error']['message'] == 'invalid_params', forged
+            unsafe_url = await call(owner, 'groups.peer.register', **(
+                params | {'target_url': 'http://peer.example.test:8377'}))
+            assert unsafe_url['error']['message'] == 'invalid_params', unsafe_url
+            assert not any(entry[0] == 'register_peer' for entry in service.calls)
+            registered = await call(owner, 'groups.peer.register', **params)
+            assert registered['result']['registered'] is True, registered
+            route_call = service.calls[-1]
+            assert route_call[0] == 'register_peer'
+            assert route_call[1]['room_id'] == 'owned'
+            assert route_call[1]['member_id'] == member
+            assert route_call[1]['target_url'] == params['target_url']
+
+        asyncio.run(probe())
+
+
+def test_canonical_target_invite_and_revoke_use_scoped_grants(tmp_path, monkeypatch):
+    from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
+    from gateway.hosted_rooms import default_db_path, peer_room_is_reserved
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    (tmp_path / 'config.yaml').write_text(json.dumps({
+        'gateway': {'room_link_url': 'http://127.0.0.1:19123',
+                    'platforms': {'api_server': {'enabled': True, 'host': '127.0.0.1', 'port': 19123}}},
+        'model': {'provider': 'custom', 'default': 'no-inference'},
+    }))
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='target', db=db, events={})
+        owner = AuthorityConnection(authority, object(), {'user_id': 'alice'})
+
+        async def call(connection, method, **params):
+            return await connection.dispatch({'id': 1, 'method': method, 'params': params})
+
+        async def probe():
+            caps = await call(owner, 'groups.capabilities')
+            assert caps['result']['room_link']['enabled'] is True, caps
+            assert caps['result']['room_link']['endpoint']['available'] is True
+            params = {'room_id': 'remote-room', 'home_install_id': 'install-home',
+                      'authority_gateway_id': 'install-home', 'authority_epoch': 1,
+                      'member_id': 'target-member'}
+            reader = AuthorityConnection(authority, object(),
+                                         {'user_id': 'alice', 'capabilities': ['session:read']})
+            denied = await call(reader, 'groups.peer.invite', **params)
+            assert denied['error']['message'] == 'permission_denied', denied
+            issued = await call(owner, 'groups.peer.invite', **params)
+            invitation = issued['result']
+            claims = decode_room_grant(gateway_room_grant_secret(), invitation['grant'],
+                                       permission='status')
+            assert claims['room_id'] == params['room_id']
+            assert claims['target_profile'] == 'default'
+            assert peer_room_is_reserved(default_db_path(), room_id='remote-room',
+                                         target_profile='default')
+            revoked = await call(owner, 'groups.peer.revoke', grant=invitation['grant'])
+            assert revoked['result']['revoked'] is True, revoked
+            assert not peer_room_is_reserved(default_db_path(), room_id='remote-room',
+                                             target_profile='default')
+
         asyncio.run(probe())
 
 
