@@ -25,6 +25,9 @@ GROUP_METHODS = {
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
     'groups.approve': 'session:approve',
+    'groups.peer.register': 'session:control',
+    'groups.peer.invite': 'session:control',
+    'groups.peer.revoke': 'session:control',
 }
 _FIELDS = {
     'groups.capabilities': set(),
@@ -42,6 +45,11 @@ _FIELDS = {
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.approve': {'room_id', 'member_id', 'task_id', 'execution_generation',
                        'choice', 'request_id'},
+    'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'grant', 'catalog',
+                             'cancellation_scope_id', 'trace_id'},
+    'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
+                           'member_id', 'grant_id', 'ttl_seconds'},
+    'groups.peer.revoke': {'grant'},
     'profiles.list': {'include_sessions'},
 }
 
@@ -100,7 +108,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
     admit = None
-    if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
+    if (getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params
+            and method != 'groups.peer.invite'):
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
         if method == 'groups.create':
@@ -125,12 +134,22 @@ def _group(authority, actor, method, params, *, host_scope=False):
 
     def capabilities():
         from gateway.session_hosted_members import member_roster
+        from hermes_cli.profiles import current_profile_name
+        from tui_gateway.hosted_room_peer_setup import ready_room_link
         # The roster groups.create will accept from THIS caller, so a picker never offers a bot
         # (parked, retiring, a sibling a profile-bound socket cannot seat) that create refuses.
         homes, refused = member_roster(authority, siblings=host_scope)
+        profile = current_profile_name('default')
+        try:
+            _, catalog = ready_room_link(profile)
+            room_link = {'enabled': True, 'profile': profile, 'catalog': catalog,
+                         'endpoint': catalog['endpoint']}
+        except Exception:
+            logger.exception('groups.capabilities: RoomLink setup unavailable')
+            room_link = {'enabled': False, 'reason': 'gateway_roomlink_unavailable'}
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id,
-                'room_link': {'enabled': False, 'reason': 'canonical_driver_required'},
+                'room_link': room_link,
                 'features': ['room_identity', 'monotonic_log', 'replayable_disband'],
                 'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT,
                 'seatable_profiles': sorted(name for name in homes if name not in refused)}
@@ -216,6 +235,32 @@ def _group(authority, actor, method, params, *, host_scope=False):
             result['driver_status'] = service.status(room['room_id'])
         return result
 
+    def register_peer():
+        if service is None:
+            raise RuntimeStoreError('runtime_coordination_required')
+        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+        from tui_gateway.hosted_room_peer_setup import register_peer_route
+
+        try:
+            return register_peer_route(service, params)
+        except PeerRunsHTTPError as exc:
+            reason = 'invalid_params' if exc.needs_reauthorization else 'runtime_coordination_required'
+            raise RuntimeStoreError(reason) from exc
+
+    def invite_peer():
+        from hermes_cli.profiles import current_profile_name
+        from tui_gateway.hosted_room_peer_setup import invite_peer_room, ready_room_link
+
+        profile = current_profile_name('default')
+        policy, _ = ready_room_link(profile)
+        return invite_peer_room(rooms.default_db_path(), params, profile, policy)
+
+    def revoke_peer():
+        from hermes_cli.profiles import current_profile_name
+        from tui_gateway.hosted_room_peer_setup import revoke_peer_room
+
+        return revoke_peer_room(rooms.default_db_path(), params, current_profile_name('default'))
+
     handlers = {
         'groups.capabilities': capabilities,
         'groups.list': listing,
@@ -224,6 +269,9 @@ def _group(authority, actor, method, params, *, host_scope=False):
         'groups.log': lambda: rooms.read_events(db_path, **params),
         'groups.rename': lambda: {'room': rooms.rename_room(db_path, **params)},
         'groups.disband': disband,
+        'groups.peer.register': register_peer,
+        'groups.peer.invite': invite_peer,
+        'groups.peer.revoke': revoke_peer,
     }
     return handlers[method]()
 
