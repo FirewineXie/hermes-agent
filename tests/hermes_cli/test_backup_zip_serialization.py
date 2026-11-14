@@ -1,4 +1,5 @@
 """The manual and automatic archive paths use the same WAL-safe serialization."""
+import os
 import sqlite3
 import zipfile
 from argparse import Namespace
@@ -8,6 +9,23 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import backup
+
+
+def test_automatic_zip_clamps_pre1980_timestamp_without_losing_file(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    old_file = home / "ancient.txt"
+    old_file.write_text("old data", encoding="utf-8")
+    os.utime(old_file, (0, 0))
+    source_mtime_ns = old_file.stat().st_mtime_ns
+    archive = tmp_path / "backup.zip"
+
+    assert backup._write_full_zip_backup(archive, home) == archive
+
+    with zipfile.ZipFile(archive) as zipped:
+        assert zipped.read("ancient.txt") == b"old data"
+        assert zipped.getinfo("ancient.txt").date_time == (1980, 1, 1, 0, 0, 0)
+    assert old_file.stat().st_mtime_ns == source_mtime_ns
 
 
 @pytest.mark.parametrize("automatic", [False, True])
