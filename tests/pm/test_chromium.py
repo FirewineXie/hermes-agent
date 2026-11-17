@@ -17,9 +17,23 @@ def test_browser_default_and_bundle_ship_full_chromium_only():
     assert "chromium-headless-shell" not in closure | bundled
 
 
+@pytest.mark.parametrize(("target", "platform"), [
+    ("linux-x64", "linux64"),
+    ("linux-arm64", "linux-arm64"),
+    ("darwin-x64", "mac-x64"),
+    ("darwin-arm64", "mac-arm64"),
+    ("win32-x64", "win64"),
+    ("win32-arm64", "win64"),
+])
+def test_chromium_fetches_one_cft_version_for_every_supported_target(target, platform):
+    assert Chromium().fetch_url("1248+157.0.8103.78", target) == (
+        f"https://cdn.playwright.dev/builds/cft/157.0.8103.78/{platform}/chrome-{platform}.zip"
+    )
+
+
 @pytest.mark.parametrize(("target", "relative"), [
     ("linux-x64", "chrome-linux64/chrome"),
-    ("linux-arm64", "chrome-linux/chrome"),
+    ("linux-arm64", "chrome-linux-arm64/chrome"),
     ("darwin-arm64", "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
     ("win32-x64", "chrome-win64/chrome.exe"),
     ("win32-arm64", "chrome-win64/chrome.exe"),
